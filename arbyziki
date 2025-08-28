@@ -68,13 +68,23 @@ decBtn.MouseButton1Click:Connect(function()
     fovLabel.Text = "FOV: "..fov
 end)
 
--- Draw FOV Circle
-local circle = Drawing.new("Circle")
-circle.Color = Color3.new(1,1,1)
-circle.Thickness = 1.5
-circle.NumSides = 64
-circle.Filled = false
-circle.Radius = fov
+-- Circle UI for FOV
+local fovCircle = Instance.new("Frame")
+fovCircle.Size = UDim2.new(0, fov*2, 0, fov*2)
+fovCircle.AnchorPoint = Vector2.new(0.5,0.5)
+fovCircle.Position = UDim2.new(0, Mouse.X, 0, Mouse.Y)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.Parent = gui
+
+local uiCorner = Instance.new("UICorner")
+uiCorner.CornerRadius = UDim.new(1,0)
+uiCorner.Parent = fovCircle
+
+local fovOutline = Instance.new("UIStroke")
+fovOutline.Thickness = 2
+fovOutline.Color = Color3.new(1,1,1)
+fovOutline.Parent = fovCircle
 
 -- Find best target in FOV
 local function getClosestTarget()
@@ -87,7 +97,7 @@ local function getClosestTarget()
                 local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
                 if onScreen then
                     local screenPos = Vector2.new(pos.X,pos.Y)
-                    local mousePos = UserInputService:GetMouseLocation()
+                    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
                     local dist = (screenPos - mousePos).Magnitude
                     if dist < fov and dist < distance then
                         closest = head
@@ -102,13 +112,12 @@ end
 
 -- Render loop
 RunService.RenderStepped:Connect(function()
-    local mousePos = UserInputService:GetMouseLocation()
-    circle.Position = mousePos
-    circle.Radius = fov
+    -- Update circle position and size
+    fovCircle.Size = UDim2.new(0, fov*2, 0, fov*2)
+    fovCircle.Position = UDim2.new(0, Mouse.X, 0, Mouse.Y)
 
     local target = getClosestTarget()
     if target then
-        -- Ask server to validate aim
         AimAssistRequest:FireServer(target)
     end
 end)
