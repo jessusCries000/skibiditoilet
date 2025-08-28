@@ -1,0 +1,375 @@
+--[[
+    barsyc.cc | GUI + ESP + Aimbot (clean, white UI)
+    Place this LocalScript inside StarterPlayerScripts in *your own* game for testing.
+
+    Features
+      • White, minimal GUI called "barsyc.cc" (drag the header to move)
+      • ESP: 2D boxes + name + HP + equipped tool (auto-sized per distance)
+      • Aimbot: targets player HEAD, FOV limit, smoothing, LoS (raycast) check
+      • FOV circle you can resize from the GUI
+
+    Notes
+      • Designed as a plain LocalScript (no exploit-only Drawing API). Uses Roblox GUIs.
+      • Respect Roblox ToS and only use in environments you control.
+]]
+
+--// Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+--// Settings (you can tweak)
+local SETTINGS = {
+	AimbotFOV = 200,        -- pixels
+	AimbotSmoothing = 0.22, -- 0..1 (higher = faster)
+	TeamCheck = false,
+	ShowFOV = true,
+}
+
+--// Gui Root
+local gui = Instance.new("ScreenGui")
+gui.Name = "barsyc_cc"
+gui.ResetOnSpawn = false
+
+-- prefer PlayerGui; fallback to CoreGui if needed
+local ok, pg = pcall(function() return LocalPlayer:WaitForChild("PlayerGui") end)
+if ok and pg then gui.Parent = pg else gui.Parent = game:GetService("CoreGui") end
+
+-- full-screen overlay layer for ESP
+local overlay = Instance.new("Frame")
+overlay.BackgroundTransparency = 1
+overlay.BorderSizePixel = 0
+overlay.Size = UDim2.fromScale(1,1)
+overlay.Active = false
+overlay.Name = "Overlay"
+overlay.ZIndex = 1
+overlay.Parent = gui
+
+-- Main Panel (white, rounded)
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 340, 0, 220)
+main.Position = UDim2.new(0, 24, 0, 24)
+main.BackgroundColor3 = Color3.fromRGB(255,255,255)
+main.BorderSizePixel = 0
+main.Active = true
+main.ZIndex = 5
+main.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 14)
+corner.Parent = main
+
+-- Header (for dragging)
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 46)
+header.BackgroundColor3 = Color3.fromRGB(245,245,245)
+header.BorderSizePixel = 0
+header.ZIndex = 6
+header.Parent = main
+
+local hCorner = Instance.new("UICorner")
+hCorner.CornerRadius = UDim.new(0, 14)
+hCorner.Parent = header
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -20, 1, 0)
+title.Position = UDim2.new(0, 20, 0, 0)
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 26
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "barsyc.cc"
+title.TextColor3 = Color3.fromRGB(0,0,0)
+title.ZIndex = 7
+title.Parent = header
+
+-- Drag logic
+local dragging, dragStart, startPos = false, nil, nil
+header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = main.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+-- Body area
+local body = Instance.new("Frame")
+body.BackgroundTransparency = 1
+body.Size = UDim2.new(1, -24, 1, -58)
+body.Position = UDim2.new(0, 12, 0, 54)
+body.ZIndex = 6
+body.Parent = main
+
+local function mkButton(text, y)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0.5, -8, 0, 36)
+	b.Position = UDim2.new(0, 0, 0, y)
+	b.Text = text
+	b.Font = Enum.Font.SourceSansBold
+	b.TextSize = 20
+	b.TextColor3 = Color3.fromRGB(0,0,0)
+	b.BackgroundColor3 = Color3.fromRGB(240,240,240)
+	b.AutoButtonColor = true
+	b.ZIndex = 7
+	b.Parent = body
+	local ui = Instance.new("UICorner")
+	ui.CornerRadius = UDim.new(0,10)
+	ui.Parent = b
+	return b
+end
+
+local function mkButtonR(text, y)
+	local b = mkButton(text, y)
+	b.Position = UDim2.new(0.5, 8, 0, y)
+	return b
+end
+
+local espBtn   = mkButton("ESP: OFF", 0)
+local aimBtn   = mkButtonR("Aimbot: OFF", 0)
+
+local fovLabel = Instance.new("TextLabel")
+fovLabel.Size = UDim2.new(1, 0, 0, 28)
+fovLabel.Position = UDim2.new(0, 0, 0, 46)
+fovLabel.BackgroundTransparency = 1
+fovLabel.Font = Enum.Font.SourceSans
+fovLabel.TextSize = 18
+fovLabel.TextColor3 = Color3.fromRGB(0,0,0)
+fovLabel.Text = "FOV: " .. tostring(SETTINGS.AimbotFOV)
+fovLabel.ZIndex = 7
+fovLabel.Parent = body
+
+local fovMinus = mkButton("-20 FOV", 80)
+local fovPlus  = mkButtonR("+20 FOV", 80)
+
+-- FOV circle (GUI-based)
+local fovCircle = Instance.new("Frame")
+fovCircle.Size = UDim2.fromOffset(SETTINGS.AimbotFOV*2, SETTINGS.AimbotFOV*2)
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromOffset(0,0)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Visible = SETTINGS.ShowFOV
+fovCircle.ZIndex = 2
+fovCircle.Parent = overlay
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1,0)
+fovCorner.Parent = fovCircle
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Thickness = 2
+fovStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+fovStroke.Color = Color3.fromRGB(255,255,255)
+fovStroke.Parent = fovCircle
+
+local function setFOV(v)
+	SETTINGS.AimbotFOV = math.clamp(math.floor(v), 40, 600)
+	fovLabel.Text = "FOV: " .. tostring(SETTINGS.AimbotFOV)
+	fovCircle.Size = UDim2.fromOffset(SETTINGS.AimbotFOV*2, SETTINGS.AimbotFOV*2)
+end
+
+fovMinus.MouseButton1Click:Connect(function() setFOV(SETTINGS.AimbotFOV - 20) end)
+fovPlus.MouseButton1Click:Connect(function() setFOV(SETTINGS.AimbotFOV + 20) end)
+
+-- Toggle state
+local espEnabled, aimbotEnabled = false, false
+espBtn.MouseButton1Click:Connect(function()
+	espEnabled = not espEnabled
+	espBtn.Text = espEnabled and "ESP: ON" or "ESP: OFF"
+end)
+aimBtn.MouseButton1Click:Connect(function()
+	aimbotEnabled = not aimbotEnabled
+	aimBtn.Text = aimbotEnabled and "Aimbot: ON" or "Aimbot: OFF"
+	fovCircle.Visible = SETTINGS.ShowFOV and aimbotEnabled
+end)
+
+--// ESP internals (GUI-based per-player box + label)
+local esp = {}
+
+local function createESPEntry(player)
+	local box = Instance.new("Frame")
+	box.BackgroundTransparency = 1
+	box.Size = UDim2.fromOffset(100, 160)
+	box.AnchorPoint = Vector2.new(0.5, 0)
+	box.Position = UDim2.fromOffset(-1000,-1000)
+	box.Visible = false
+	box.ZIndex = 2
+	box.Parent = overlay
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 2
+	stroke.Color = Color3.fromRGB(255,255,255)
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = box
+
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0.5, 1)
+	label.Position = UDim2.new(0.5, 0, 0, -4)
+	label.Size = UDim2.new(1, 0, 0, 18)
+	label.Font = Enum.Font.SourceSansBold
+	label.TextSize = 16
+	label.TextColor3 = Color3.fromRGB(255,255,255)
+	label.TextStrokeTransparency = 0.3
+	label.Text = ""
+	label.ZIndex = 3
+	label.Parent = box
+
+	esp[player] = {box = box, label = label}
+end
+
+local function removeESPEntry(player)
+	local e = esp[player]
+	if not e then return end
+	if e.box then e.box:Destroy() end
+	esp[player] = nil
+end
+
+local function getWeaponName(char)
+	if not char then return "" end
+	for _, inst in ipairs(char:GetChildren()) do
+		if inst:IsA("Tool") then return inst.Name end
+	end
+	return ""
+end
+
+local function teammateOK(p)
+	if not SETTINGS.TeamCheck then return true end
+	local lt, pt = LocalPlayer.Team, p.Team
+	if not lt or not pt then return true end
+	return lt ~= pt
+end
+
+local function updateESP()
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LocalPlayer and teammateOK(p) then
+			if not esp[p] then createESPEntry(p) end
+			local entry = esp[p]
+			local char = p.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if not (char and hum and hrp and hum.Health > 0) then
+				entry.box.Visible = false
+				continue
+			end
+
+			-- 3D -> 2D bounding box based on character bounding box
+			local cf, size = char:GetBoundingBox()
+			local top3D = cf.Position + cf.UpVector * (size.Y/2)
+			local bottom3D = cf.Position - cf.UpVector * (size.Y/2)
+			local top2D, on1 = Camera:WorldToViewportPoint(top3D)
+			local bottom2D, on2 = Camera:WorldToViewportPoint(bottom3D)
+			if espEnabled and on1 and on2 then
+				local height = math.abs(top2D.Y - bottom2D.Y)
+				local width = height * 0.6
+				local centerX = (top2D.X + bottom2D.X) * 0.5
+				local topY = math.min(top2D.Y, bottom2D.Y)
+
+				entry.box.Size = UDim2.fromOffset(width, height)
+				entry.box.Position = UDim2.fromOffset(centerX, topY)
+				entry.box.AnchorPoint = Vector2.new(0.5, 0)
+				entry.box.Visible = true
+
+				local hp = math.floor(hum.Health)
+				local wpn = getWeaponName(char)
+				entry.label.Text = string.format("%s | %d HP%s", p.Name, hp, (#wpn>0 and (" | "..wpn) or ""))
+				entry.label.Position = UDim2.new(0.5, 0, 0, -6)
+				entry.label.Visible = true
+			else
+				entry.box.Visible = false
+			end
+		end
+	end
+end
+
+-- Clean up on player leave
+Players.PlayerRemoving:Connect(function(p)
+	removeESPEntry(p)
+end)
+
+-- Pre-create entries for current players
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= LocalPlayer then createESPEntry(p) end
+end
+
+--// Aimbot helpers
+local function onScreen(vec3)
+	local _, vis = Camera:WorldToViewportPoint(vec3)
+	return vis
+end
+
+local function inFOV(screenPos)
+	local mouse = UserInputService:GetMouseLocation()
+	local d = (Vector2.new(screenPos.X, screenPos.Y) - mouse).Magnitude
+	return d <= SETTINGS.AimbotFOV, d
+end
+
+local function visibleChar(char)
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+	local origin = Camera.CFrame.Position
+	local dir = hrp.Position - origin
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Blacklist
+	params.FilterDescendantsInstances = {LocalPlayer.Character, char}
+	local hit = workspace:Raycast(origin, dir, params)
+	return hit == nil
+end
+
+local function bestTargetHead()
+	local best, bestDist = nil, math.huge
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LocalPlayer and teammateOK(p) then
+			local char = p.Character
+			local head = char and char:FindFirstChild("Head")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if head and hum and hum.Health > 0 then
+				local sp, vis = Camera:WorldToViewportPoint(head.Position)
+				if vis then
+					local inside, dist = inFOV(sp)
+					if inside and dist < bestDist and visibleChar(char) then
+						best, bestDist = head, dist
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+--// Render loop
+RunService.RenderStepped:Connect(function()
+	-- keep FOV circle centered at mouse
+	local m = UserInputService:GetMouseLocation()
+	fovCircle.Position = UDim2.fromOffset(m.X, m.Y)
+
+	if espEnabled then
+		updateESP()
+	else
+		for _, e in pairs(esp) do
+			if e.box then e.box.Visible = false end
+			if e.label then e.label.Visible = false end
+		end
+	end
+
+	if aimbotEnabled then
+		local head = bestTargetHead()
+		if head then
+			-- smooth aim towards head
+			local camPos = Camera.CFrame.Position
+			local desired = CFrame.new(camPos, head.Position)
+			Camera.CFrame = Camera.CFrame:Lerp(desired, SETTINGS.AimbotSmoothing)
+		end
+	end
+end)
