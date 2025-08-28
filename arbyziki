@@ -3,9 +3,10 @@
   Place this LocalScript in StarterPlayerScripts **in your own game**.
 
   ⚠️ Notes:
-    • ESP overlay shows teammates/players info with occlusion (safe).
-    • Aim Trainer only locks on to NPC dummies tagged with CollectionService "TargetDummy".
+    • ESP overlay variable/toggle is present (for future expansion).
+    • Dummy Aim Trainer only locks to NPC dummies tagged with CollectionService "TargetDummy".
     • Aim Assist for real players is validated via ReplicatedStorage RemoteEvent "AimAssistRequest".
+      (Now robust: gracefully handles missing/late remote and auto-enables when it appears.)
 ]]
 
 --// Services
@@ -17,8 +18,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
--- Remote
-local AimAssistRequest = ReplicatedStorage:WaitForChild("AimAssistRequest")
+-- Remote (robust fetch with fallback + auto-enable when available)
+local AimAssistRequest = ReplicatedStorage:FindFirstChild("AimAssistRequest")
+if not AimAssistRequest then
+	-- short, non-infinite wait
+	AimAssistRequest = ReplicatedStorage:WaitForChild("AimAssistRequest", 3)
+end
+if AimAssistRequest and AimAssistRequest:IsA("RemoteEvent") == false then
+	AimAssistRequest = nil
+end
 
 -- Mouse position (safe function)
 local function getMousePos()
@@ -36,8 +44,17 @@ local SETTINGS = {
 	AimbotFOV = 200,
 	AimbotSmoothing = 0.25,
 	ShowFOVCircle = true,
-	AimAssistEnabled = true,    -- Server-validated aim assist for players
+	AimAssistEnabled = AimAssistRequest ~= nil,  -- Enabled only if remote exists
 }
+
+-- If remote is missing, listen for it to appear later and auto-enable
+ReplicatedStorage.ChildAdded:Connect(function(child)
+	if not AimAssistRequest and child.Name == "AimAssistRequest" and child:IsA("RemoteEvent") then
+		AimAssistRequest = child
+		SETTINGS.AimAssistEnabled = true
+		warn("[barsyc.cc] AimAssistRequest found. Aim Assist enabled.")
+	end
+end)
 
 --// GUI Root
 local gui = Instance.new("ScreenGui")
@@ -45,7 +62,7 @@ gui.Name = "barsyc_cc"
 gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
--- Overlay GUI (FOV + ESP anchors)
+-- Overlay GUI (FOV + anchors)
 local overlayGui = Instance.new("Frame")
 overlayGui.Name = "OverlayGui"
 overlayGui.BackgroundTransparency = 1
@@ -53,12 +70,12 @@ overlayGui.Size = UDim2.fromScale(1,1)
 overlayGui.ZIndex = 1
 overlayGui.Parent = gui
 
--- Adornments for ESP boxes
+-- Adornments for ESP boxes (placeholder parent; not populating boxes in this trimmed version)
 local adornParent = Instance.new("Folder")
 adornParent.Name = "Adornments"
 adornParent.Parent = Camera
 
--- Main Panel (white draggable frame)
+-- Main Panel (white, rounded, draggable)
 local panel = Instance.new("Frame")
 panel.Size = UDim2.new(0, 360, 0, 240)
 panel.Position = UDim2.new(0, 24, 0, 24)
@@ -71,7 +88,7 @@ local panelCorner = Instance.new("UICorner")
 panelCorner.CornerRadius = UDim.new(0,14)
 panelCorner.Parent = panel
 
--- Draggable header
+-- Header
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 46)
 header.BackgroundColor3 = Color3.fromRGB(245,245,245)
@@ -150,7 +167,7 @@ fovLbl.Position = UDim2.new(0, 0, 0, 44)
 fovLbl.Font = Enum.Font.SourceSans
 fovLbl.TextSize = 18
 fovLbl.TextColor3 = Color3.fromRGB(0,0,0)
-fovLbl.Text = "FOV: "..SETTINGS.AimbotFOV
+fovLbl.Text = "FOV: 200"
 fovLbl.ZIndex = 12
 fovLbl.Parent = body
 
@@ -255,8 +272,8 @@ RunService.RenderStepped:Connect(function()
 		end
 	end
 
-	-- Server validated aim assist (for real players)
-	if SETTINGS.AimAssistEnabled then
+	-- Server validated aim assist (for real players) — only if remote exists
+	if SETTINGS.AimAssistEnabled and AimAssistRequest then
 		local target = bestPlayerHead()
 		if target then
 			AimAssistRequest:FireServer(target)
