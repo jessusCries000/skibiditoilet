@@ -1,4 +1,4 @@
---[[ 
+--[[
   barsyc.cc | Unified GUI + Debug Overlay (ESP) + Dummy Aim Trainer + Server-Validated Aim Assist
   Place this LocalScript in StarterPlayerScripts **in your own game**.
 
@@ -16,10 +16,14 @@ local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
 
 -- Remote
 local AimAssistRequest = ReplicatedStorage:WaitForChild("AimAssistRequest")
+
+-- Mouse position (safe function)
+local function getMousePos()
+	return UserInputService:GetMouseLocation()
+end
 
 --// Settings
 local SETTINGS = {
@@ -193,7 +197,7 @@ end)
 -- Aim Logic
 --========================
 local function inFOV(screenPos)
-	local mouse = UserInputService:GetMouseLocation()
+	local mouse = getMousePos()
 	return (Vector2.new(screenPos.X, screenPos.Y) - mouse).Magnitude <= SETTINGS.AimbotFOV
 end
 
@@ -205,7 +209,7 @@ local function bestDummyHead()
 		if hum and head and hum.Health > 0 then
 			local sp, vis = Camera:WorldToViewportPoint(head.Position)
 			if vis and inFOV(sp) then
-				local dist = (Vector2.new(sp.X, sp.Y) - UserInputService:GetMouseLocation()).Magnitude
+				local dist = (Vector2.new(sp.X, sp.Y) - getMousePos()).Magnitude
 				if dist < bestDist then
 					best, bestDist = head, dist
 				end
@@ -224,7 +228,7 @@ local function bestPlayerHead()
 			if hum and hum.Health > 0 then
 				local sp, vis = Camera:WorldToViewportPoint(head.Position)
 				if vis and inFOV(sp) then
-					local dist = (Vector2.new(sp.X, sp.Y) - UserInputService:GetMouseLocation()).Magnitude
+					local dist = (Vector2.new(sp.X, sp.Y) - getMousePos()).Magnitude
 					if dist < bestDist then
 						best, bestDist = head, dist
 					end
@@ -238,7 +242,7 @@ end
 -- Render loop
 RunService.RenderStepped:Connect(function()
 	-- Move FOV circle with mouse
-	local m = UserInputService:GetMouseLocation()
+	local m = getMousePos()
 	fovCircle.Position = UDim2.fromOffset(m.X, m.Y)
 
 	-- Dummy aim trainer (local camera control)
