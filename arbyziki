@@ -1,387 +1,114 @@
---[[
-  barsyc.cc | White GUI + Dev-Safe Debug Overlay (ESP-like) + Aim Trainer (Dummies only)
-  Place this LocalScript in StarterPlayerScripts **in your own game**.
-
-  IMPORTANT: This script is a developer/debug tool, not a cheat. It:
-    • Shows teammate/character info using Roblox-safe UI elements (Highlight, BillboardGui, BoxHandleAdornment) with occlusion.
-    • Only aims at tagged training dummies (NOT real players). No through-walls aiming.
-    • Includes robust alive checks and HRP-based boxing.
-
-  To use Aim Trainer: tag your dummy NPC models with CollectionService tag "TargetDummy"
-  (e.g., CollectionService:AddTag(npcModel, "TargetDummy")). Dummies must have Head + HumanoidRootPart + Humanoid.
-]]
-
---// Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Camera = workspace.CurrentCamera
+
 local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
 
---// Settings
-local SETTINGS = {
-	TeamCheck = false,        -- ignore teammates in overlay if true
-	ShowOverlay = true,
-	ShowBoxes = true,         -- HRP-sized box via BoxHandleAdornment using model extents
-	ShowNameHPWeapon = true,  -- BillboardGui above head
-	OverlayColor = Color3.fromRGB(255,255,255),
-	Aimbot = false,           -- Aim trainer (dummies only)
-	AimbotFOV = 200,
-	AimbotSmoothing = 0.25,   -- 0..1 (higher = snappier)
-	ShowFOVCircle = true,
-}
+-- Remote for server validation
+local AimAssistRequest = ReplicatedStorage:WaitForChild("AimAssistRequest")
 
---// GUI ROOT
+-- GUI Setup
 local gui = Instance.new("ScreenGui")
 gui.Name = "barsyc_cc"
 gui.ResetOnSpawn = false
-local ok, pg = pcall(function() return LocalPlayer:WaitForChild("PlayerGui") end)
-if ok and pg then gui.Parent = pg else gui.Parent = game:GetService("CoreGui") end
+gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
--- overlay layer for FOV circle & anchors (GUI-only)
-local overlayGui = Instance.new("Frame")
-overlayGui.Name = "OverlayGui"
-overlayGui.BackgroundTransparency = 1
-overlayGui.Size = UDim2.fromScale(1,1)
-overlayGui.ZIndex = 1
-overlayGui.Parent = gui
-
--- 3D adornments parent (for BoxHandleAdornment)
-local adornParent = Instance.new("Folder")
-adornParent.Name = "Adornments"
-adornParent.Parent = workspace.CurrentCamera
-
--- Main panel (white, rounded, draggable)
-local panel = Instance.new("Frame")
-panel.Size = UDim2.new(0, 360, 0, 240)
-panel.Position = UDim2.new(0, 24, 0, 24)
-panel.BackgroundColor3 = Color3.fromRGB(255,255,255)
-panel.BorderSizePixel = 0
-panel.Active = true
-panel.ZIndex = 10
-panel.Parent = gui
-local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0,14)
-panelCorner.Parent = panel
-
-local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 46)
-header.BackgroundColor3 = Color3.fromRGB(245,245,245)
-header.BorderSizePixel = 0
-header.ZIndex = 11
-header.Parent = panel
-local headerCorner = Instance.new("UICorner")
-headerCorner.CornerRadius = UDim.new(0,14)
-headerCorner.Parent = header
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 200, 0, 100)
+mainFrame.Position = UDim2.new(0, 20, 0, 20)
+mainFrame.BackgroundColor3 = Color3.new(1,1,1)
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = gui
 
 local title = Instance.new("TextLabel")
-title.BackgroundTransparency = 1
-title.Size = UDim2.new(1, -20, 1, 0)
-title.Position = UDim2.new(0, 20, 0, 0)
+title.Size = UDim2.new(1, 0, 0, 30)
+title.Text = "barsyc.cc AimAssist"
 title.Font = Enum.Font.SourceSansBold
-title.TextSize = 26
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Text = "barsyc.cc"
-title.TextColor3 = Color3.fromRGB(0,0,0)
-title.ZIndex = 12
-title.Parent = header
+title.TextSize = 20
+title.BackgroundTransparency = 1
+title.TextColor3 = Color3.new(0,0,0)
+title.Parent = mainFrame
 
--- Dragging logic
-local dragging, dragStart, startPos = false, nil, nil
-header.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragStart = input.Position
-		startPos = panel.Position
-		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then dragging = false end
-		end)
-	end
-end)
-UserInputService.InputChanged:Connect(function(input)
-	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-		local delta = input.Position - dragStart
-		panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-	end
-end)
+-- FOV Controls
+local fov = 150
 
--- Body
-local body = Instance.new("Frame")
-body.BackgroundTransparency = 1
-body.Size = UDim2.new(1, -24, 1, -58)
-body.Position = UDim2.new(0, 12, 0, 54)
-body.ZIndex = 11
-body.Parent = panel
+local fovLabel = Instance.new("TextLabel")
+fovLabel.Size = UDim2.new(1, 0, 0, 30)
+fovLabel.Position = UDim2.new(0,0,0,35)
+fovLabel.Text = "FOV: "..fov
+fovLabel.BackgroundTransparency = 1
+fovLabel.TextColor3 = Color3.new(0,0,0)
+fovLabel.Font = Enum.Font.SourceSans
+fovLabel.TextSize = 18
+fovLabel.Parent = mainFrame
 
-local function mkButton(text, pos)
-	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0.5, -8, 0, 36)
-	b.Position = pos
-	b.Text = text
-	b.Font = Enum.Font.SourceSansBold
-	b.TextSize = 20
-	b.TextColor3 = Color3.fromRGB(0,0,0)
-	b.BackgroundColor3 = Color3.fromRGB(240,240,240)
-	b.AutoButtonColor = true
-	b.ZIndex = 12
-	b.Parent = body
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0,10)
-	c.Parent = b
-	return b
-end
+local incBtn = Instance.new("TextButton")
+incBtn.Size = UDim2.new(0.5, -5, 0, 30)
+incBtn.Position = UDim2.new(0,0,0,70)
+incBtn.Text = "+"
+incBtn.Parent = mainFrame
 
-local overlayBtn = mkButton("Overlay: ON", UDim2.new(0, 0, 0, 0))
-local aimBtn     = mkButton("Aim Trainer: OFF", UDim2.new(0.5, 8, 0, 0))
+local decBtn = Instance.new("TextButton")
+decBtn.Size = UDim2.new(0.5, -5, 0, 30)
+decBtn.Position = UDim2.new(0.5,5,0,70)
+decBtn.Text = "-"
+decBtn.Parent = mainFrame
 
-local fovLbl = Instance.new("TextLabel")
-fovLbl.BackgroundTransparency = 1
-fovLbl.Size = UDim2.new(1, 0, 0, 24)
-fovLbl.Position = UDim2.new(0, 0, 0, 44)
-fovLbl.Font = Enum.Font.SourceSans
-fovLbl.TextSize = 18
-fovLbl.TextColor3 = Color3.fromRGB(0,0,0)
-fovLbl.Text = "FOV: "..SETTINGS.AimbotFOV
-fovLbl.ZIndex = 12
-fovLbl.Parent = body
-
-local fovMinus = mkButton("-20 FOV", UDim2.new(0, 0, 0, 72))
-local fovPlus  = mkButton("+20 FOV", UDim2.new(0.5, 8, 0, 72))
-
-local function setFOV(v)
-	SETTINGS.AimbotFOV = math.clamp(math.floor(v), 40, 600)
-	fovLbl.Text = "FOV: "..SETTINGS.AimbotFOV
-	fovCircle.Size = UDim2.fromOffset(SETTINGS.AimbotFOV*2, SETTINGS.AimbotFOV*2)
-end
-fovMinus.MouseButton1Click:Connect(function() setFOV(SETTINGS.AimbotFOV - 20) end)
-fovPlus.MouseButton1Click:Connect(function() setFOV(SETTINGS.AimbotFOV + 20) end)
-
-overlayBtn.MouseButton1Click:Connect(function()
-	SETTINGS.ShowOverlay = not SETTINGS.ShowOverlay
-	overlayBtn.Text = SETTINGS.ShowOverlay and "Overlay: ON" or "Overlay: OFF"
-	for _, e in pairs(_G.__barsyc_cache or {}) do
-		if e.highlight then e.highlight.Enabled = SETTINGS.ShowOverlay end
-		if e.box then e.box.Visible = SETTINGS.ShowOverlay end
-		if e.billboard then e.billboard.Enabled = SETTINGS.ShowOverlay end
-	end
+incBtn.MouseButton1Click:Connect(function()
+    fov += 10
+    fovLabel.Text = "FOV: "..fov
 end)
 
-aimBtn.MouseButton1Click:Connect(function()
-	SETTINGS.Aimbot = not SETTINGS.Aimbot
-	aimBtn.Text = SETTINGS.Aimbot and "Aim Trainer: ON" or "Aim Trainer: OFF"
-	fovCircle.Visible = SETTINGS.ShowFOVCircle and SETTINGS.Aimbot
+decBtn.MouseButton1Click:Connect(function()
+    fov = math.max(50, fov - 10)
+    fovLabel.Text = "FOV: "..fov
 end)
 
--- FOV circle GUI
-local fovCircle = Instance.new("Frame")
-fovCircle.Size = UDim2.fromOffset(SETTINGS.AimbotFOV*2, SETTINGS.AimbotFOV*2)
-fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-fovCircle.BackgroundTransparency = 1
-fovCircle.Position = UDim2.new(0, 0, 0, 0)
-fovCircle.Visible = SETTINGS.ShowFOVCircle and SETTINGS.Aimbot
-fovCircle.ZIndex = 3
-fovCircle.Parent = overlayGui
-local fovCorner = Instance.new("UICorner")
-fovCorner.CornerRadius = UDim.new(1,0)
-fovCorner.Parent = fovCircle
-local fovStroke = Instance.new("UIStroke")
-fovStroke.Thickness = 2
-fovStroke.Color = Color3.fromRGB(255,255,255)
-fovStroke.Parent = fovCircle
+-- Draw FOV Circle
+local circle = Drawing.new("Circle")
+circle.Color = Color3.new(1,1,1)
+circle.Thickness = 1.5
+circle.NumSides = 64
+circle.Filled = false
+circle.Radius = fov
 
---// Utility
-local function alive(hum)
-	return hum and hum.Health > 0 and hum:GetState() ~= Enum.HumanoidStateType.Dead
+-- Find best target in FOV
+local function getClosestTarget()
+    local closest, distance = nil, math.huge
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
+            local head = player.Character.Head
+            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local screenPos = Vector2.new(pos.X,pos.Y)
+                    local mousePos = UserInputService:GetMouseLocation()
+                    local dist = (screenPos - mousePos).Magnitude
+                    if dist < fov and dist < distance then
+                        closest = head
+                        distance = dist
+                    end
+                end
+            end
+        end
+    end
+    return closest
 end
 
-local function teammateOK(p)
-	if not SETTINGS.TeamCheck then return true end
-	local lt, pt = LocalPlayer.Team, p.Team
-	if not lt or not pt then return true end
-	return lt ~= pt
-end
-
-local function getWeaponName(char)
-	if not char then return "" end
-	for _, inst in ipairs(char:GetChildren()) do
-		if inst:IsA("Tool") then return inst.Name end
-	end
-	return ""
-end
-
---// Per-Player overlay cache
-_G.__barsyc_cache = _G.__barsyc_cache or {}
-local cache = _G.__barsyc_cache
-
-local function ensureEntry(player)
-	if cache[player] then return cache[player] end
-	local entry = {}
-	-- Highlight (occluded, not through walls)
-	local hl = Instance.new("Highlight")
-	hl.Enabled = SETTINGS.ShowOverlay
-	hl.OutlineTransparency = 0
-	hl.FillTransparency = 1
-	hl.OutlineColor = SETTINGS.OverlayColor
-	hl.DepthMode = Enum.HighlightDepthMode.Occluded -- obey walls
-	hl.Parent = gui
-	entry.highlight = hl
-	-- BoxHandleAdornment (around whole model, HRP-based, occluded)
-	local box = Instance.new("BoxHandleAdornment")
-	box.Color3 = SETTINGS.OverlayColor
-	box.AlwaysOnTop = false -- occluded by walls
-	box.Transparency = 0
-	box.ZIndex = 0
-	box.Visible = SETTINGS.ShowOverlay and SETTINGS.ShowBoxes
-	box.Parent = adornParent
-	entry.box = box
-	-- Billboard for name | HP | weapon
-	local bb = Instance.new("BillboardGui")
-	bb.Size = UDim2.fromOffset(200, 24)
-	bb.StudsOffset = Vector3.new(0, 2.5, 0)
-	bb.AlwaysOnTop = true
-	bb.Enabled = SETTINGS.ShowOverlay and SETTINGS.ShowNameHPWeapon
-	bb.Parent = gui
-	local txt = Instance.new("TextLabel")
-	txt.BackgroundTransparency = 1
-	txt.Size = UDim2.fromScale(1,1)
-	txt.Font = Enum.Font.SourceSansBold
-	txt.TextSize = 16
-	txt.TextColor3 = Color3.fromRGB(255,255,255)
-	txt.TextStrokeTransparency = 0.25
-	txt.Text = ""
-	txt.Parent = bb
-	entry.billboard = bb
-	entry.text = txt
-
-	cache[player] = entry
-	return entry
-end
-
-local function clearEntry(player)
-	local e = cache[player]
-	if not e then return end
-	pcall(function()
-		if e.highlight then e.highlight:Destroy() end
-		if e.box then e.box:Destroy() end
-		if e.billboard then e.billboard:Destroy() end
-	end)
-	cache[player] = nil
-end
-
-local function updateEntry(player)
-	if player == LocalPlayer or not teammateOK(player) then
-		local e = cache[player]
-		if e then
-			if e.highlight then e.highlight.Enabled = false end
-			if e.box then e.box.Visible = false end
-			if e.billboard then e.billboard.Enabled = false end
-		end
-		return
-	end
-
-	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	local head = char and char:FindFirstChild("Head")
-
-	local e = ensureEntry(player)
-	if not (SETTINGS.ShowOverlay and char and hum and hrp and head and alive(hum)) then
-		if e.highlight then e.highlight.Enabled = false end
-		if e.box then e.box.Visible = false end
-		if e.billboard then e.billboard.Enabled = false end
-		return
-	end
-
-	-- attach highlight to the character
-	e.highlight.Adornee = char
-	e.highlight.Enabled = true
-
-	-- HRP-based box sized to model extents
-	local size = char:GetExtentsSize()
-	e.box.Size = size
-	e.box.Adornee = hrp
-	e.box.CFrame = char:GetPivot()
-	e.box.Visible = SETTINGS.ShowBoxes
-
-	-- Billboard text
-	e.billboard.Adornee = head
-	local hp = math.floor(hum.Health)
-	local wpn = getWeaponName(char)
-	e.text.Text = string.format("%s | %d HP%s", player.Name, hp, (#wpn>0 and (" | "..wpn) or ""))
-	e.billboard.Enabled = SETTINGS.ShowNameHPWeapon
-end
-
--- Hooks
-local function hookCharacter(p)
-	p.CharacterAdded:Connect(function()
-		RunService.Heartbeat:Wait()
-		updateEntry(p)
-	end)
-end
-
-Players.PlayerAdded:Connect(function(p)
-	ensureEntry(p)
-	hookCharacter(p)
-end)
-Players.PlayerRemoving:Connect(function(p)
-	clearEntry(p)
-end)
-
-for _, p in ipairs(Players:GetPlayers()) do
-	if p ~= LocalPlayer then
-		ensureEntry(p)
-		hookCharacter(p)
-	end
-end
-
--- periodic updater
+-- Render loop
 RunService.RenderStepped:Connect(function()
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= LocalPlayer then
-			updateEntry(p)
-		end
-	end
-	-- move FOV circle to mouse
-	local m = UserInputService:GetMouseLocation()
-	fovCircle.Position = UDim2.fromOffset(m.X, m.Y)
-end)
+    local mousePos = UserInputService:GetMouseLocation()
+    circle.Position = mousePos
+    circle.Radius = fov
 
---========================
--- Aim Trainer (DUMMIES ONLY)
---========================
-local function inFOV(screenPos)
-	local mouse = UserInputService:GetMouseLocation()
-	local d = (Vector2.new(screenPos.X, screenPos.Y) - mouse).Magnitude
-	return d <= SETTINGS.AimbotFOV, d
-end
-
-local function bestDummyHead()
-	local best, bestDist = nil, math.huge
-	for _, model in ipairs(CollectionService:GetTagged("TargetDummy")) do
-		if model and model:IsA("Model") then
-			local hum = model:FindFirstChildOfClass("Humanoid")
-			local head = model:FindFirstChild("Head")
-			if hum and head and alive(hum) then
-				local sp, vis = Camera:WorldToViewportPoint(head.Position)
-				if vis then
-					local inside, dist = inFOV(sp)
-					if inside and dist < bestDist then
-						best, bestDist = head, dist
-					end
-				end
-			end
-		end
-	end
-	return best
-end
-
-RunService.RenderStepped:Connect(function()
-	if not SETTINGS.Aimbot then return end
-	local targetHead = bestDummyHead()
-	if targetHead then
-		local camPos = Camera.CFrame.Position
-		local desired = CFrame.new(camPos, targetHead.Position)
-		Camera.CFrame = Camera.CFrame:Lerp(desired, SETTINGS.AimbotSmoothing)
-	end
+    local target = getClosestTarget()
+    if target then
+        -- Ask server to validate aim
+        AimAssistRequest:FireServer(target)
+    end
 end)
